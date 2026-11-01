@@ -105,6 +105,8 @@ def wait_local(process, port):
 
 def stop():
     import modal
+    from ssh_tunnel import stop_sandbox
+    stop_sandbox()
     if not STATE.exists():
         print("No recorded Modal sandbox.")
         return
@@ -119,6 +121,8 @@ def start(args):
     if STATE.exists():
         raise RuntimeError("A session is recorded; run python tunnel.py stop first")
     domains = read_domains(args.domains)
+    if args.smoke:
+        domains = list(dict.fromkeys([*domains, "api.ipify.org"]))
     # Reserve the requested port before allocating any paid cloud resources.
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", args.port))
@@ -187,15 +191,24 @@ def main():
     run.add_argument("--domains", type=Path, default=ROOT / "domains.txt")
     run.add_argument("--port", type=int, default=7890)
     run.add_argument("--duration", type=int, default=3600, help="Sandbox lifetime in seconds (default: 1 hour)")
-    client = commands.add_parser("connect", help="Connect local proxy to the stable deployed endpoint")
+    client = commands.add_parser("connect", help="Connect via pinned OpenSSH with automatic endpoint discovery")
     client.add_argument("--port", type=int, default=7890)
     client.add_argument("--trace", action="store_true", help="Log destination hostnames, never payloads or credentials")
+    legacy = commands.add_parser("connect-wss", help="Explicitly use the previous WSS deployment")
+    legacy.add_argument("--port", type=int, default=7890)
+    legacy.add_argument("--trace", action="store_true")
     commands.add_parser("stop")
     args = parser.parse_args()
     if args.command == "start" and (not 1 <= args.port <= 65535 or not 60 <= args.duration <= 86400):
         parser.error("port must be 1..65535 and duration must be 60..86400 seconds")
     try:
         if args.command == "connect":
+            if not 1 <= args.port <= 65535:
+                parser.error("port must be 1..65535")
+            import asyncio
+            from ssh_tunnel import connect
+            asyncio.run(connect(args))
+        elif args.command == "connect-wss":
             if not 1 <= args.port <= 65535:
                 parser.error("port must be 1..65535")
             import asyncio

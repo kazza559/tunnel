@@ -1,8 +1,12 @@
 # Codex, Claude Code và kiểm tra kết nối
 
+## Transport mặc định
+
+`connect` hiện dùng OpenSSH với host key ghim, không gọi endpoint WSS `v0z`. Mạng A phải cho phép kết nối TCP tới hostname/port raw tunnel do Modal cấp. Không giả định SSH trên port ngẫu nhiên hoạt động được trong mọi mạng công ty.
+
 ## Proxy theo tiến trình
 
-Bật frontend trước bằng `python tunnel.py connect`. Trong terminal ứng dụng riêng, đặt các biến trước khi khởi động CLI:
+Bật frontend SSH trước bằng `python tunnel.py connect` và chờ `SSH ready`. Proxy variables của ứng dụng không thay đổi khi đổi WSS sang SSH. Trong terminal ứng dụng riêng, đặt các biến trước khi khởi động CLI:
 
 ```powershell
 $env:HTTPS_PROXY = 'http://127.0.0.1:7890'
@@ -10,7 +14,7 @@ $env:HTTP_PROXY = 'http://127.0.0.1:7890'
 $env:NO_PROXY = 'localhost,127.0.0.1,::1'
 ```
 
-HTTPS_PROXY dùng URL `http://` là đúng: ứng dụng nói HTTP CONNECT tới proxy trên loopback; lớp WSS/TLS tới Modal được frontend quản lý. Không đổi base URL của Codex/Claude thành URL Modal, vì server này không nhận OpenAI/Anthropic API trực tiếp.
+HTTPS_PROXY dùng URL `http://` là đúng: ứng dụng nói HTTP CONNECT tới proxy trên loopback; đường tới Modal được SSH port forward bảo vệ. Không đổi base URL của Codex/Claude thành URL Modal, vì server này không nhận OpenAI/Anthropic API trực tiếp.
 
 Các ví dụ `$env:` chỉ tác động terminal hiện tại và process con, không thay đổi biến User/Machine. Ứng dụng đã mở phải được khởi động lại; browser/desktop/IDE không mặc định kế thừa terminal. Kiểm tra biến lowercase nếu đã cấu hình từ trước vì một số client ưu tiên chúng.
 
@@ -92,19 +96,18 @@ Không gửi nguyên log ra ngoài nếu chưa kiểm tra dữ liệu trong đó
 ## curl, SOCKS và browser
 
 ```powershell
-curl.exe --silent --show-error --fail --max-time 30 --noproxy "" --proxy http://127.0.0.1:7890 https://api.ipify.org
-curl.exe --silent --show-error --fail --max-time 30 --noproxy "" --proxy socks5h://127.0.0.1:7890 https://api.ipify.org
+# Domain trong filter; API có thể trả 401/405 vì lệnh không gửi credentials:
+curl.exe --silent --show-error --max-time 30 --noproxy "" --proxy http://127.0.0.1:7890 -I https://api.openai.com/v1/models
+curl.exe --silent --show-error --max-time 30 --noproxy "" --proxy socks5h://127.0.0.1:7890 -I https://api.anthropic.com/v1/messages
 ```
 
-`--noproxy ""` tránh NO_PROXY đang có làm curl bỏ qua proxy. `socks5h` yêu cầu truyền hostname tới frontend; domain được chọn sẽ resolve ở Modal. `socks5://` có thể resolve trước trên A, khiến router chỉ thấy IP và chọn DIRECT.
+`--noproxy ""` tránh NO_PROXY làm curl bỏ qua frontend. Dùng `socks5h` để truyền hostname thay vì resolve IP trước trên A. `api.ipify.org` không nằm trong filter production; dùng nó sẽ kiểm tra DIRECT, không xác nhận egress SSH.
 
-Browser cần cấu hình HTTP proxy hoặc SOCKS v5 + remote DNS riêng. Đảm bảo localhost callback của OAuth không bị đưa ra cloud. Repo chưa có extension, PAC hoặc tự chỉnh Windows system proxy. Các process con/plugin cũng không chắc kế thừa cấu hình nếu được launcher khác tạo.
-
-Nếu site nội bộ chỉ vào được qua B, giữ đường SSH/proxy B riêng cho chúng; bộ router hiện chỉ có Modal và DIRECT. Không thêm domain nội bộ vào Modal với kỳ vọng Modal có quyền truy cập mạng riêng đó.
+Browser cần cấu hình HTTP proxy hoặc SOCKS v5 + remote DNS riêng; localhost callback OAuth phải ở local. Chưa có PAC/system proxy hoặc route qua B. Xem [domain filter](routing.md) để biết API/auth/CDN nào được chọn và vì sao GitHub/npm giữ DIRECT.
 
 ## Bậc kiểm tra
 
-1. `python -m unittest -v`: không dùng cloud/model; test parsing, domain, policy, TLS/WSS, DNS và lifecycle.
+1. `python -m unittest -v`: không dùng cloud/model; test parsing, domain, policy, TLS/WSS, SSH discovery/fail-closed, DNS và lifecycle.
 2. curl qua frontend đã triển khai: xác nhận CONNECT/SOCKS có egress thật, chưa xác nhận tài khoản model.
 3. `check_clients.py`: xác nhận CLI đã đăng nhập gửi được request model qua cấu hình kiểm chứng.
 4. Dùng workflow thực tế: browser login, token refresh, MCP/plugin, phiên dài và mạng công ty vẫn cần kiểm tra riêng.

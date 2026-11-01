@@ -1,13 +1,25 @@
-# Apex domains include their subdomains. Other destinations go DIRECT.
+# Routing allowlist: matching apex/subdomains -> Modal SSH, everything else -> DIRECT.
+# Edit this file and restart the frontend; local + remote use the same list.
+
+# Codex / OpenAI / ChatGPT.
+# Sources: codex-proxy/modal_app.py (_target_url, REALTIME_WS_URL),
+# codex-proxy/cloud_auth.py (device login), codex-proxy/README.md (desktop assets).
 openai.com
 chatgpt.com
 oaistatic.com
 oaiusercontent.com
 oaistatsig.com
+
+# Claude Code / Anthropic API, login, refresh and first-party content.
+# Sources: claude-proxy/src/main.rs (api.anthropic.com),
+# claude-proxy/claude-auth-providers/src/claude_code/login.rs (claude.com, platform.claude.com),
+# claude-proxy/modal_app.py (downloads.claude.ai); first-party content supplements.
 anthropic.com
 claude.ai
 claude.com
 claudeusercontent.com
 claudemcpcontent.com
-# Public IP diagnostic; remove if not needed.
-api.ipify.org
+
+# Shared hosts (github.com, raw.githubusercontent.com, registry.npmjs.org,
+# storage.googleapis.com, sentry.io, statsig.com) intentionally remain DIRECT.
+# No diagnostic IP service is routed in the production allowlist.

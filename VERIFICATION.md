@@ -18,3 +18,17 @@ Proxy trace confirmed successful Modal routes to `chatgpt.com`, `ab.chatgpt.com`
 Deployed policy checks: unauthenticated CONNECT = 407; wrong password = 407; unlisted domain = 403; unlisted port = 403. Actual egress check through HTTP CONNECT returned a Modal-side IP. The stable deployment was also checked with both HTTP CONNECT and SOCKS5; both returned the same egress IP. All 22 automated tests passed.
 
 This validates short authenticated model requests. Long-running sessions, token expiry/refresh, browser sign-in and use from the company network have not been tested. The deployed endpoint persists, but any individual WSS connection may end after one hour; the client must reconnect. Trace logging was enabled only for validation.
+
+## SSH migration
+
+Default `python tunnel.py connect` now uses OpenSSH, pinned Ed25519 host identity and named-Sandbox endpoint discovery. The WSS observations above are historical and remain specific to `connect-wss`.
+
+Actual SSH CLI runs: Codex returned `7` / `Hanoi` in 18.4 seconds; Claude Code returned `7` / `Hanoi` in 7.2 seconds. Both exited 0 using the same official-endpoint, no-tools prompt and local account logins.
+
+Forced rotation check: terminated the first sandbox; the running manager discovered/recreated a replacement and moved from `r484.modal.host:35817` to `r475.modal.host:44795`. A subsequent proxy request succeeded, and the pinned host public key stayed unchanged.
+
+A real OpenSSH connection with an intentionally incorrect known_hosts key was rejected. Live HTTP CONNECT and SOCKS5 requests also succeeded through SSH. Final server checks cover key-only login, no shell/sessions, PermitOpen loopback proxy only, and disabled stream-local forwarding. Test processes and their sandboxes are stopped after validation.
+
+The new manager tests verify fresh endpoint lookup, sandbox lifetime/port restrictions, strict host-key options, and no DIRECT fallback when SSH is down. No 24-hour soak or company-network test was performed. Raw TCP random ports may be blocked by that network; SSH is identifiable by DPI and does not hide from endpoint agents.
+
+Production-filter validation after the SSH migration: OpenAI over HTTP CONNECT returned unauthenticated 401, Anthropic over SOCKS5 returned 405, and trace confirmed both destinations used SSH. `api.ipify.org` remained DIRECT; a direct request to GOST for `github.com:443` was denied with 403. The current full suite has 31 passing tests. The two reference proxy repos were only read. Final local port 7890 and the temporary SSH sandbox were stopped after validation.

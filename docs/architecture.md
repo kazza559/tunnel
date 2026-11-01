@@ -1,77 +1,72 @@
-# Kiến trúc và phạm vi
+# Kiến trúc SSH
 
-## Hai chế độ transport
+## Đường dữ liệu
 
-| Chế độ | Cloud | Transport A → Modal | Vòng đời |
-|---|---|---|---|
-| `connect` | Web Function triển khai bằng `deploy.py` | WSS tới `/ws` trên endpoint cố định | Deployment tồn tại; container chạy theo nhu cầu |
-| `start` | Sandbox tạo theo mỗi lần chạy | TCP/TLS qua `encrypted_ports=[8080]` | Mặc định 1 giờ, tối đa 24 giờ; Ctrl+C dọn sandbox |
+```text
+Claude/Codex --HTTP CONNECT hoặc SOCKS5--> Python local :7890
+    | domain được chọn
+    v
+Cổng forward loopback riêng --OpenSSH mã hóa--> sshd trên Modal :2222
+    v
+GOST 127.0.0.1:8080 --TCP--> OpenAI/Anthropic
+```
 
-Hai chế độ dùng cùng HTTP proxy GOST trên Linux và cùng thuật toán domain ở frontend. Frontend local dùng Python, tránh phụ thuộc binary GOST Windows bị Application Control chặn trên máy phát triển. Không thay đổi chính sách bảo vệ Windows.
+Python vẫn chọn domain như trước. Với domain đã chọn, nó gửi CONNECT qua cổng forward riêng do `ssh -N -L` mở. CONNECT và HTTPS bên trong được SSH mang qua mạng. Một phiên SSH multiplex nhiều kết nối; không có lớp WSS/TLS ngoài ở đường dữ liệu mặc định.
 
-## Đường request HTTPS
+Modal gọi cổng này là `unencrypted_ports` vì relay không bọc TLS riêng. **Payload vẫn được OpenSSH mã hóa.** HTTP API của ứng dụng tiếp tục được HTTPS riêng bảo vệ. GOST không giải mã HTTPS, không đọc prompt, không đổi payload và không quản token ứng dụng.
 
-1. Ứng dụng gửi `CONNECT api.anthropic.com:443` tới `127.0.0.1:7890`, hoặc gửi SOCKS5 CONNECT chứa hostname.
-2. Python chuẩn hóa hostname và kiểm tra domain gốc/subdomain trong config local.
-3. Với domain được chọn, frontend mở WSS tới Modal, kiểm tra chứng chỉ bằng trust store mặc định, rồi gửi CONNECT có proxy authentication bên trong WSS.
-4. GOST xác thực mật khẩu, kiểm tra allowlist domain và cổng 80/443 rồi mở kết nối đích. GOST phân giải DNS đích trên Modal.
-5. Frontend trả CONNECT thành công cho ứng dụng và chuyển byte hai chiều. Ứng dụng tự thực hiện TLS tới OpenAI/Anthropic qua đường đó.
+## Danh tính và quyền
 
-Modal kết thúc lớp TLS/WSS ngoài. TLS của ứng dụng tới dịch vụ đích vẫn chạy bên trong, không có TLS MITM do repo này chủ động thực hiện. SSE, HTTP/2 và WSS của ứng dụng được mang dưới dạng byte trong đường CONNECT; không có route xử lý API riêng.
+Lần đầu tạo hai cặp Ed25519 riêng trong `.runtime/`: client key để xác thực tài khoản `tunnel`, server host key để giữ danh tính qua các sandbox. Không dùng private key SSH GitHub hoặc SSH cá nhân khác.
 
-Với HTTP thông thường, frontend nhận absolute URL, chuyển thành origin-form trước khi gửi tới đích và loại proxy auth do client cung cấp. Nhánh remote vẫn dùng CONNECT tới cổng 80.
+Host public key được đưa vào known_hosts local với alias `tunnel-modal`. OpenSSH kiểm tra `StrictHostKeyChecking=yes`, `IdentitiesOnly=yes`, tắt agent và không tự nhận host key mới. Hostname/port ngẫu nhiên không làm thay đổi danh tính được tin cậy. Pin xuất phát từ key tạo local, không từ `ssh-keyscan` trên kết nối chưa xác minh.
 
-## Domain, DNS và fail-closed
+sshd chỉ cho public-key auth, không root/password/TTY/session/shell. Chỉ cho TCP forwarding tới `127.0.0.1:8080`; tắt agent, X11, stream-local forwarding và tun device. GOST chỉ nghe loopback và vẫn kiểm tra allowlist domain/cổng 80/443. GOST không cần password riêng trong chế độ SSH vì key auth và PermitOpen bảo vệ đường vào.
 
-`domains.txt` chỉ chứa domain gốc, mỗi dòng một tên, cho phép comment `#`. `openai.com` khớp cả `openai.com` và `api.openai.com`, không khớp `evilopenai.com` hay `openai.com.attacker.invalid`. Cấu hình không chấp nhận URL, wildcard, IP hoặc cổng.
+Private host key được gửi vào sandbox qua Modal Secret tạm. Việc cấp key, Modal credentials, image và API điều khiển phải được tin cậy: SSH data plane không bảo vệ được một control plane đã bị chiếm quyền hoặc một máy local đã bị can thiệp. Key local được giới hạn quyền file; trên Windows dùng ACL riêng cho tài khoản hiện tại. Không đưa `.runtime/` lên GitHub.
 
-Domain đã chọn đi Modal ở mọi cổng; remote chỉ cho 80/443, nên chọn cổng khác sẽ bị từ chối thay vì đi DIRECT. Lỗi WSS, auth hoặc CONNECT cũng không fallback. Domain không được chọn dùng DNS/kết nối TCP trên máy local.
+## Endpoint discovery và reconnect
 
-`SOCKS5` có thể gửi hostname hoặc IP. Dùng `socks5h` để proxy nhận hostname. Repo không thực hiện sniff SNI hoặc suy ngược IP thành domain. Domain đích đã chọn không cần resolve local; hostname của chính endpoint Modal vẫn cần được resolve để mở tunnel.
+Client tính một tên sandbox từ danh sách domain, public key client/host và nội dung entrypoint server. Tên đó là chỉ dẫn tra cứu trong App `tunnel`, không phải địa chỉ TCP. Khi cần kết nối, dùng `Sandbox.from_name`; nếu không còn sandbox sống thì tạo sandbox có cùng tên, chờ ready và gọi `tunnels()[2222].tcp_socket`.
 
-Rule chỉ nhìn hostname, không nhìn path trong HTTPS. Muốn đưa `github.com/openai/...` qua tunnel phải xét host `github.com`; rule “URL chứa openai” không tồn tại ở đây. Browser và plugin có thể dùng CDN/SSO bên ngoài danh sách mặc định; chỉ thêm khi có nhu cầu thực tế.
+Nếu hai client cùng tạo, bên gặp name conflict tra cứu lại sandbox đã thắng. Thay domain, key hoặc server code tạo tên cấu hình mới; sandbox cũ có thể tự hết idle. Trong một cấu hình, việc recreate vẫn giữ host key đã ghim.
 
-## Credentials và dữ liệu ở đâu
+SSH dùng keepalive 15 giây, tối đa 3 lần không phản hồi. Khi process SSH chết, local đánh dấu route cloud chưa sẵn sàng, dọn child cũ, tra cứu API lại rồi mở SSH mới. Retry tăng dần 1 đến 15 giây. Không có fallback sang WSS hoặc DIRECT cho domain được chọn.
 
-| Dữ liệu | Nơi lưu |
+Lifetime sandbox tối đa 24 giờ, idle timeout 300 giây. Kết nối SSH đang mở tính là active; việc này không vô hiệu hóa lifetime tối đa. Khi container hết hạn, phiên đang mở có thể đứt; manager phục hồi những kết nối mới, không tiếp tục byte stream hoặc tự gửi lại request cũ.
+
+## Domain và DNS
+
+Domain gốc/subdomain được match theo ranh giới label. `openai.com` khớp `api.openai.com`, không khớp `evilopenai.com`. Domain được chọn ở cổng khác 80/443 vẫn đi vào SSH rồi bị remote từ chối, không rơi về DIRECT.
+
+Hostname đích được GOST phân giải ở Modal. A vẫn cần phân giải relay Modal và dùng Modal API cho discovery. SOCKS client phải gửi hostname (`socks5h`); nếu chỉ gửi IP thì không thể suy ra domain gốc. Repo không sniff SNI hoặc triển khai TUN.
+
+## Ai thấy gì?
+
+| Vị trí | Có thể thấy |
 |---|---|
-| Login/API key Codex và Claude | Credential store riêng của ứng dụng trên A |
-| Mật khẩu proxy deployment | Named Modal Secret và `.runtime/deployed.json` ở A |
-| Mật khẩu proxy sandbox | Secret tạm, config local tạm theo phiên |
-| Config GOST trên cloud | File riêng trong `/tmp`, tạo với quyền POSIX `0600` |
-| Local CLI test output | `.runtime/*-result.json` và log đi kèm, không commit |
-| Chứng chỉ/key test | `fixtures/`, chỉ cho test localhost |
+| Thiết bị mạng trên A, không can thiệp endpoint/khóa | Relay host/IP/port, banner SSH, lượng/timing/kết nối; không đọc CONNECT bên trong SSH |
+| Agent trên máy A | Có thể thấy process, loopback CONNECT/SOCKS và file; tùy cấu hình/khả năng |
+| Modal/sshd/GOST | Destination cần mở; HTTPS ứng dụng vẫn mã hóa khi không có TLS interception được client tin |
+| Dịch vụ đích | IP egress cloud của Modal và request HTTPS sau khi dịch vụ giải mã |
 
-Mật khẩu proxy được tạo ngẫu nhiên; deployment giữ nguyên khi redeploy cùng config, sandbox tạo mới mỗi phiên. `Proxy-Authorization` chỉ dùng giữa frontend và GOST. Credentials dịch vụ đích đi trong TLS của ứng dụng; repo không đọc token, đổi bearer hay refresh thay ứng dụng.
+CA dùng cho TLS inspection không tự đủ để giải mã SSH được xác minh host key. Điều này không làm SSH vô hình trước DPI và không bảo đảm mạng cho phép TCP port ngẫu nhiên.
 
-Frontend chỉ bind loopback, nhưng process khác trên cùng máy có thể dùng cổng này mà không có local authentication. Trên Windows, `0600` không thay thế ACL: thư mục runtime phải thuộc phạm vi tài khoản của bạn. Không gửi config runtime vào issue, log công khai hoặc Git.
-
-## Những gì còn quan sát được
-
-Mạng A có thể thấy DNS/SNI hoặc hostname/IP Modal, số kết nối, thời gian và dung lượng. Mỗi kết nối đích có một kết nối WSS riêng, không phải SSH multiplexing một flow. Nếu lớp TLS ngoài bị giải mã bằng CA được máy tin cậy, hostname trong CONNECT và proxy authentication có thể lộ với bên giải mã đó. Phần mềm giám sát trên máy A còn có thể quan sát process, loopback hoặc dữ liệu ở ứng dụng.
-
-Modal/GOST biết destination hostname và byte stream được chuyển tiếp. Với HTTPS, nội dung application vẫn được TLS bảo vệ khi không có interception được client tin cậy. IP egress của Modal có thể bị dịch vụ đích chặn hoặc yêu cầu xác minh.
-
-## Bản đồ code
+## File chính
 
 | File | Trách nhiệm |
 |---|---|
-| `tunnel.py` | Domain validation, GOST download/checksum, config, sandbox lifecycle và CLI |
-| `local_proxy.py` | HTTP/SOCKS handshake, chọn route, CONNECT upstream và chuyển tiếp TCP |
-| `ws_stream.py` | Đổi binary WebSocket message thành giao diện byte stream |
-| `modal_app.py` | Web Function label `v0z`, GOST WebSocket listener và tài nguyên cloud |
-| `deploy.py` | Secret, Modal deploy, lấy URL và lưu config local |
-| `smoke.py` | Kiểm tra policy/IP và HTTPS transport của sandbox |
-| `check_clients.py` | Spawn Codex/Claude thật với môi trường proxy riêng |
-| `test_tunnel.py` | Unit/lifecycle test và socket integration test cho TLS/WSS |
+| `ssh_tunnel.py` | Key/known_hosts, named sandbox, SSH process, reconnect |
+| `ssh_server.py` | Restricted sshd và GOST loopback trong sandbox |
+| `local_proxy.py` | HTTP/SOCKS parser, domain routing và chuyển byte |
+| `tunnel.py` | CLI và helper dùng chung; giữ sandbox TLS cũ |
+| `modal_app.py`, `deploy.py`, `ws_stream.py` | Chế độ WSS cũ được chọn riêng |
+| `test_ssh_tunnel.py`, `test_tunnel.py` | Test SSH discovery/fail-closed và các parser/transport cũ |
 
-GOST Linux được pin bản 3.3.2; checksum SHA-256 của archive được kiểm tra khi tải mới. Cache là tài sản local được tin cậy; không tải lại/rehash binary đã tồn tại mỗi lần chạy.
+## Tham khảo
 
-## Nguồn tham khảo
-
-- [Modal WebSockets](https://modal.com/docs/guide/webhooks#websockets)
-- [Modal TCP tunnels](https://modal.com/docs/guide/tunnels)
-- [Modal Sandbox networking](https://modal.com/docs/guide/sandbox-networking)
-- [GOST HTTP proxy](https://gost.run/en/tutorials/protocols/http/)
-- [GOST domain rules](https://gost.run/en/concepts/bypass/)
-- [GOST 3.3.2 release](https://github.com/go-gost/gost/releases/tag/v3.3.2)
+- [Modal raw TCP tunnels](https://modal.com/docs/guide/tunnels#advanced-unencrypted-tcp-tunnels)
+- [Modal Sandbox API](https://modal.com/docs/reference/modal.Sandbox)
+- [Sandbox lifetime và idle](https://modal.com/docs/guide/sandboxes)
+- [OpenSSH client configuration](https://man.openbsd.org/ssh_config.5)
+- [OpenSSH server configuration](https://man.openbsd.org/sshd_config.5)

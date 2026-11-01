@@ -1,59 +1,52 @@
-# Triển khai và vận hành
+# Vận hành SSH
 
-## Yêu cầu và cấu trúc local
-
-Python 3.11+; `modal` và `websockets` từ `requirements.txt`; tài khoản Modal đã đăng nhập. Sandbox/remote dùng GOST Linux amd64 3.3.2, tải từ GitHub release và xác minh SHA-256. Không cần cài GOST lên Windows.
-
-| Đường dẫn | Nội dung | Commit? |
-|---|---|---|
-| `.runtime/deployed.json` | URL WSS, domain snapshot, mật khẩu proxy, tên Modal Secret | Không |
-| `.runtime/session.json` | ID sandbox theo phiên để dọn tài nguyên | Không |
-| `.runtime/session-*/local.json` | Config sandbox tạm, có mật khẩu | Không |
-| `.runtime/local.pid` | PID được ghi lại khi chạy nền theo hướng dẫn | Không |
-| `.runtime/proxy.*.log` | Log frontend khi chạy nền | Không |
-| `.runtime/*-result.json`, `*.stdout.log`, `*.stderr.log` | Kết quả thử CLI | Không |
-| `.cache/` | Binary tải về và công cụ local | Không |
-| `fixtures/` | Cert/key self-signed cho test localhost | Có; không dùng ngoài test |
-
-## Deployment cố định
+## Khởi động
 
 ```powershell
 cd D:\code\tunnel
 python -m pip install -r requirements.txt
-python -m modal setup  # bỏ qua nếu đã đăng nhập
-python deploy.py
+ssh -V
+python -m modal setup  # nếu chưa có login Modal
+python tunnel.py connect
 ```
 
-`deploy.py` thực hiện:
+Chờ `SSH ready`. Client cần Modal credentials cho discovery/recreate; lần đầu có thể build image `openssh-server` và GOST Linux. Không cần chạy `deploy.py` hoặc gọi endpoint WSS.
 
-1. Tạo `.runtime/deployed.json` nếu chưa có, với mật khẩu ngẫu nhiên và tên secret riêng.
-2. Tạo named Modal Secret; nếu đã tồn tại, giữ secret hiện có.
-3. Deploy App `tunnel`, Function `proxy`, endpoint label `v0z`.
-4. Lấy URL thực từ Modal; lưu WSS URL với `/ws` và domain snapshot vào config local bằng file tạm rồi replace.
+Dùng `--port 7891` để đổi cổng local, `--trace` để ghi domain đích khi chẩn đoán. Chỉ chạy một frontend cho cùng bộ `.runtime/` tại một thời điểm; các file state/log không thiết kế cho nhiều manager song song.
 
-Deployment hiện tại: `https://kazimhung559--v0z.us-east.modal.run`. Workspace khác sẽ có hostname khác: lấy giá trị mà script in ra, không copy hostname workspace hiện tại sang tài khoản khác.
+## Các file riêng tư
 
-App dùng tối đa một container, CPU 0.25 core, RAM 128 MiB và tối đa 100 concurrent inputs; scale down window 300 giây. Không đặt `min_containers`, nên không giữ container nóng khi không có tải. Một kết nối WSS có thời hạn Function 3600 giây; deployment/URL không hết hạn theo thời gian đó. Có thể có cold start hoặc ngắt kết nối do nền tảng, ứng dụng phải retry/kết nối mới.
+| File/thư mục | Nội dung |
+|---|---|
+| `.runtime/ssh_client_ed25519` và `.pub` | Key đăng nhập SSH riêng của tunnel |
+| `.runtime/ssh_host_ed25519` và `.pub` | Host identity riêng, giữ ổn định giữa các sandbox |
+| `.runtime/ssh_known_hosts` | Public host key được ghim dưới alias `tunnel-modal` |
+| `.runtime/ssh_config` | Config trống để không kế thừa tùy chỉnh SSH user |
+| `.runtime/ssh-session.json` | Sandbox ID/name và TCP endpoint vừa được tra cứu |
+| `.runtime/ssh.stderr.log` | Thông báo lỗi OpenSSH; không ghi payload |
+| `.runtime/deployed.json` | Credentials riêng cho WSS cũ, không dùng cho SSH |
+| `.cache/` | Binary tải về; không commit |
 
-Chỉ cần deploy lại khi sửa remote code, `domains.txt` hoặc endpoint label. Chạy `connect` bình thường không gọi deploy và không tạo secret mới.
+Không chỉnh `ssh-session.json` để đổi server, vì endpoint được tra cứu lại từ Modal API. Không xóa known_hosts để bỏ qua cảnh báo sai host key. Chuẩn bị key và quyền quản lý Modal từ môi trường tin cậy; cơ chế SSH không thay thế bảo vệ máy/control plane.
 
-## Chạy frontend
+## Dừng
 
-Foreground, dễ kiểm soát nhất:
+Foreground: Ctrl+C dừng frontend và SSH child. Sandbox có thể tiếp tục sống tới khi idle 300 giây; một SSH mở giữ sandbox active và phát sinh compute/egress.
+
+Dừng cloud ngay sau khi frontend đã dừng:
 
 ```powershell
-python tunnel.py connect
-# Hoặc:
-python tunnel.py connect --port 7891
+python tunnel.py stop
 ```
 
-Ctrl+C dừng frontend, không dừng deployment. Khi frontend dừng, ứng dụng đã trỏ `127.0.0.1` sẽ lỗi kết nối; chúng không được frontend tự chuyển sang DIRECT.
+Nếu gọi lệnh này khi frontend còn chạy, manager sẽ tạo lại sandbox để phục hồi kết nối. Vì vậy thứ tự là **dừng local trước, dừng sandbox sau**. Lệnh cũng dọn sandbox TCP/TLS cũ nếu có state cũ.
 
-Chạy nền trên Windows, trong `D:\code\tunnel`, sau khi chắc chắn cổng 7890 chưa dùng:
+## Chạy nền Windows
+
+Trong `D:\code\tunnel`, kiểm tra cổng trước rồi tạo process ẩn:
 
 ```powershell
 Get-NetTCPConnection -LocalPort 7890 -State Listen -ErrorAction SilentlyContinue
-
 $tunnelProcess = Start-Process -FilePath (Get-Command python).Source `
   -ArgumentList @('-u', 'D:/code/tunnel/tunnel.py', 'connect') `
   -WorkingDirectory 'D:/code/tunnel' -WindowStyle Hidden `
@@ -62,89 +55,59 @@ $tunnelProcess = Start-Process -FilePath (Get-Command python).Source `
 $tunnelProcess.Id | Set-Content -LiteralPath .runtime/local.pid
 ```
 
-Đây là tiến trình nền, chưa phải Windows Service hoặc tác vụ tự chạy sau reboot. Đổi đường dẫn trong ví dụ nếu clone ở nơi khác; đường dẫn có dấu cách cần được quote phù hợp trong `ArgumentList`.
-
-Dừng tiến trình do hướng dẫn trên tạo, có kiểm tra PID chưa bị tái sử dụng:
+Đường dẫn có dấu cách cần quote phù hợp trong `ArgumentList`. Đây chưa phải Windows Service hoặc tác vụ tự chạy sau reboot. Với process chạy nền, Ctrl+C không áp dụng; khi dừng cưỡng bức, phải dừng cả SSH child do frontend tạo. Kiểm tra PID/command line trước, không kill mọi `ssh.exe` vì có thể có phiên GitHub/B của bạn.
 
 ```powershell
 $tunnelPid = [int](Get-Content -LiteralPath .runtime/local.pid)
 $tunnelInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $tunnelPid"
 if ($tunnelInfo.CommandLine -notlike '*D:/code/tunnel/tunnel.py*connect*') {
-  throw 'PID không khớp frontend tunnel; kiểm tra lại trước khi dừng'
+  throw 'PID không khớp tunnel; kiểm tra trước khi dừng'
 }
+$sshChildren = Get-CimInstance Win32_Process -Filter "ParentProcessId = $tunnelPid" |
+  Where-Object { $_.Name -eq 'ssh.exe' -and $_.CommandLine -like '*HostKeyAlias=tunnel-modal*' }
 Stop-Process -Id $tunnelPid
+$sshChildren | ForEach-Object { Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
+python tunnel.py stop
 ```
 
-Dừng cloud deployment riêng:
+Không dùng `modal app stop tunnel` để chỉ dừng một sandbox nếu còn cần WSS cũ hoặc tài nguyên khác trong App; lệnh đó dừng cả App.
 
-```powershell
-python -m modal app stop tunnel
-```
+## Endpoint đổi hoặc sandbox hết hạn
 
-Lệnh này dừng App và các container đang chạy; muốn bật deployment trở lại thì chạy `python deploy.py`. Không nhầm với `python tunnel.py stop`, vốn chỉ dọn sandbox theo phiên.
+Không cần sửa hostname/port trong config. Manager tự lấy endpoint ở mỗi lần nối lại. Sandbox có lifetime tối đa 86400 giây và idle 300 giây. Khi phiên đứt, request đang chạy có thể lỗi; sau dòng `SSH ready` mới, client ứng dụng cần mở kết nối mới.
 
-## Sửa domain, đổi endpoint và redeploy
+Tên sandbox có fingerprint của domain, public identity và server source; thay những phần đó cần restart frontend để nạp cấu hình. Nếu thay domain hoặc server code, sandbox cấu hình cũ có thể còn sống tới khi idle. Kiểm tra dashboard nếu cần dọn ngay các phiên cũ.
 
-- Sửa `domains.txt`, mỗi dòng một domain gốc, rồi `python deploy.py` và restart frontend.
-- Đổi tên bằng `label="v0z"` tại `@modal.web_server` trong `modal_app.py`; sửa giá trị, deploy lại rồi restart frontend để nạp URL mới.
-- Giữ App `tunnel` và Function `proxy` nếu không muốn sửa lookup trong `deploy.py`. Label URL độc lập với hai tên đó.
-- Không chỉnh thủ công hostname trong config rồi mong server đã đổi. Script lấy URL thực sau deploy.
-- Redeploy có thể cắt các phiên đang mở; thực hiện khi không có request quan trọng. Repo không tự drain phiên cũ.
+Host key không được tự thay khi endpoint đổi. Thông báo `REMOTE HOST IDENTIFICATION HAS CHANGED` là lỗi xác minh cần điều tra, không phải lý do để dùng `StrictHostKeyChecking=no`.
 
-[Tài liệu Modal về label và URL](https://modal.com/docs/guide/webhook-urls).
+## Chuyển máy / mất key
 
-## Chuyển máy và sao lưu
+Không có private key trên GitHub. Giữ cả client/host key và public key tương ứng trong bản sao riêng được bảo vệ. Khi chuyển sang máy của chính bạn, khôi phục vào `.runtime/`, bảo đảm ACL/quyền file, login Modal đúng workspace rồi chạy `connect`.
 
-Git chỉ chứa code. Để tiếp tục cùng deployment, cài dependency trên máy mới và khôi phục `.runtime/deployed.json` bằng kênh riêng, được bảo vệ và chỉ dành cho tài khoản của bạn. Tạo `.runtime/` nếu chưa có. Sau đó dùng `python tunnel.py connect`; frontend này không cần đăng nhập Modal khi chỉ kết nối tới URL đã có.
-
-File này là credentials proxy: ai có nó có thể dùng egress được allowlist. Không gửi qua issue/chat công khai hoặc commit vào repo, kể cả repo private. Giữ ACL Windows đủ hẹp; POSIX `0600` không thay thế ACL Windows.
-
-Nếu mất config, không coi `python deploy.py` là lệnh chỉ đọc. Script sẽ tạo password/secret mới và redeploy App cùng tên trong workspace, khiến frontend cũ không còn xác thực được. Nếu muốn tạo lại deployment, xác nhận đúng workspace và chấp nhận cập nhật toàn bộ frontend; dọn secret cũ trên Modal sau khi chắc chắn không còn sử dụng. Hiện chưa có lệnh tự khôi phục hoặc rotate password.
-
-## Sandbox theo phiên
-
-Không chạy cùng cổng với frontend deployment đang hoạt động. Dùng cổng riêng khi thử song song:
-
-```powershell
-python tunnel.py start --port 7891 --duration 300 --smoke
-# Giữ một sandbox foreground trong tối đa 1 giờ:
-python tunnel.py start --port 7891
-```
-
-`--duration` từ 60 đến 86400 giây, mặc định 3600. Ctrl+C dừng proxy child, terminate sandbox và dọn config tạm. Nếu launcher bị đóng cưỡng bức, `python tunnel.py stop` dùng ID trong `.runtime/session.json` để terminate; lifetime cứng vẫn giới hạn tuổi sandbox. Mỗi phiên có mật khẩu mới. Không tự reconnect hoặc giữ URL sandbox cố định.
-
-Smoke mặc định dùng `api.ipify.org` qua proxy và `example.com` qua DIRECT. Nếu sửa danh sách khiến các host đó đổi route, kết quả smoke cần được diễn giải theo cấu hình mới; không mặc định suy ra proxy hỏng.
+Nếu tạo lại key, đó là một identity mới; tên sandbox cũng đổi. Không thể dùng key mới để vào sandbox cũ. Không lấy host key trên mạng chưa xác minh làm pin. Hiện không có dịch vụ cấp phát hoặc quy trình rotate key tự động.
 
 ## Chẩn đoán
 
 ```powershell
-python tunnel.py connect --trace
-# Với tiến trình nền:
-Get-Content .runtime/proxy.stderr.log -Tail 50
+Get-Content .runtime/ssh.stderr.log -Tail 50
 Get-Content .runtime/proxy.stdout.log -Tail 50
-python -m modal app logs tunnel
+Get-Content .runtime/proxy.stderr.log -Tail 50
 ```
 
-Không mở thêm frontend cùng cổng để bật trace; dừng frontend hiện tại trước. Trace chỉ in `MODAL hostname:port` sau CONNECT thành công, không phải access log đầy đủ và không phải bằng chứng mọi process trên máy đã dùng proxy. Tắt trace khi hết kiểm tra.
-
-| Triệu chứng | Kiểm tra và xử lý |
+| Triệu chứng | Xử lý |
 |---|---|
-| `deployed.json` không tồn tại | Deploy mới hoặc khôi phục config riêng; đọc phần chuyển máy trước khi deploy |
-| `Address already in use` / WinError 10048 | Xác định process đang giữ cổng, dùng `--port` khác hoặc dừng đúng process của bạn |
-| HTTP 502 ở local | Lỗi TLS/WSS, sai password, remote từ chối domain/cổng hoặc đích không tới được; xem log local/cloud |
-| Remote 407 | Thiếu/sai mật khẩu; config local và Modal Secret phải thuộc cùng deployment |
-| Remote 403 | Domain/cổng bị allowlist từ chối; không phải lỗi login Codex/Claude |
-| API 401 sau CONNECT thành công | Đường mạng đã tới API; kiểm tra login/API key của chính ứng dụng |
-| API 403 | Có thể là quyền tài khoản, IP cloud hoặc policy upstream; proxy không cấp quyền truy cập |
-| Cổng 7890 mở nhưng CLI vẫn gọi gateway cũ | Gỡ endpoint/provider/auth override trong riêng môi trường thử; xem clients.md |
-| SOCKS tới IP bị đi DIRECT | Ứng dụng đã resolve DNS trước; chuyển sang hostname mode/socks5h |
-| Website thiếu tài nguyên | Tìm hostname CDN/login còn thiếu; kiểm tra browser có dùng proxy không |
-| Domain khác không truy cập được | DIRECT không tự kế thừa proxy/PAC upstream của công ty |
-| Windows không thực thi GOST | Frontend local đã dùng Python; không cần tắt Application Control |
-| Phiên bị ngắt sau thời gian dài | Xem idle timeout 300 giây và WSS/function timeout 3600 giây; mở request mới |
+| `waiting for SSH` kéo dài | Kiểm tra login/quyền Modal, build image và kết nối raw TCP ra relay |
+| `Connection timed out` tới cổng ngẫu nhiên | Mạng có thể không cho SSH/TCP port đó; SSH không tự giả thành HTTPS 443 |
+| `Permission denied (publickey)` | Kiểm tra đúng bộ client key và sandbox identity; không chuyển sang password auth |
+| Sai host key | Dừng và xác minh bootstrap/control plane/key local; không tự nhận key mới |
+| HTTP 502 khi reconnect | Route cloud đang chưa sẵn sàng hoặc remote từ chối; chờ `SSH ready`, thử request mới |
+| HTTP 403 ở proxy remote | Domain/cổng không nằm trong allowlist 80/443 |
+| API 401 sau tunnel thành công | Kiểm tra login/API key ứng dụng, không phải lỗi endpoint discovery |
+| DIRECT không truy cập được | Không tự kế thừa proxy/PAC công ty; B vẫn cần cho site nội bộ riêng |
+| Cổng 7890 đang dùng | Dừng đúng frontend cũ hoặc đổi `--port` |
 
-## Khi push GitHub
+## WSS / sandbox TLS cũ
 
-`.runtime/`, `.cache/`, `.venv/` và `__pycache__/` không được stage. Kiểm tra bằng `git status --ignored` và `git diff --cached --name-only`. Các key test trong `fixtures/` được commit có chủ đích vì test TLS cần chúng; không dùng chúng làm secret thật.
+WSS cũ vẫn có tại `https://kazimhung559--v0z.us-east.modal.run/ws` (dùng scheme `wss://` trong config). Chỉ chọn bằng `python tunnel.py connect-wss`; cần `.runtime/deployed.json`. `python deploy.py` chỉ deploy chế độ này. SSH không tự chuyển sang WSS khi lỗi.
 
-URL deployment không phải mật khẩu. Không dán giá trị `password` hoặc nội dung file config lên GitHub. Không cần đưa credentials Modal, Codex hoặc Claude vào repository để clone/build code.
+Sandbox TLS cũ: `python tunnel.py start --port 7891 --duration 300 --smoke`. Không chạy trùng cổng local. Chế độ smoke thêm `api.ipify.org` riêng cho phiên kiểm tra; filter production không chứa host này. Tài liệu lịch sử và kết quả WSS được giữ trong `VERIFICATION.md`.

@@ -77,7 +77,11 @@ class Proxy:
     async def connect(self, host, port):
         if not self.selected(host):
             return await asyncio.open_connection(host, port, limit=65536)
-        if self.config.get("url"):
+        if "ssh_port" in self.config:
+            if not self.config.get("ssh_ready"):
+                raise OSError("SSH tunnel is not ready")
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.config["ssh_port"], limit=65536)
+        elif self.config.get("url"):
             from websockets.asyncio.client import connect
             from websockets.exceptions import WebSocketException
             from ws_stream import WebSocketStream
@@ -93,10 +97,13 @@ class Proxy:
                 server_hostname=self.config["hostname"], limit=65536,
             )
         try:
-            token = base64.b64encode(("tunnel:" + self.config["password"]).encode()).decode()
+            authentication = ""
+            if "ssh_port" not in self.config:
+                token = base64.b64encode(("tunnel:" + self.config["password"]).encode()).decode()
+                authentication = f"Proxy-Authorization: Basic {token}\r\n"
             target = authority(host, port)
             writer.write((f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n"
-                          f"Proxy-Authorization: Basic {token}\r\n\r\n").encode())
+                          f"{authentication}\r\n").encode())
             await writer.drain()
             header = await reader.readuntil(b"\r\n\r\n")
             status = header.split(b"\r\n", 1)[0].split()
