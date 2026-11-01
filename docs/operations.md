@@ -1,5 +1,7 @@
 # Vận hành SSH
 
+Xem thêm [vòng đời, chi phí và hướng cải tiến](lifecycle.md) để hiểu khi nào sandbox được tạo, vì sao SSH mở vẫn tính active và các tình huống shutdown/reconnect.
+
 ## Khởi động
 
 ```powershell

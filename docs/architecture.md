@@ -25,6 +25,8 @@ sshd chỉ cho public-key auth, không root/password/TTY/session/shell. Chỉ ch
 
 Private host key được gửi vào sandbox qua Modal Secret tạm. Việc cấp key, Modal credentials, image và API điều khiển phải được tin cậy: SSH data plane không bảo vệ được một control plane đã bị chiếm quyền hoặc một máy local đã bị can thiệp. Key local được giới hạn quyền file; trên Windows dùng ACL riêng cho tài khoản hiện tại. Không đưa `.runtime/` lên GitHub.
 
+Chi tiết state machine vận hành và các điểm mở để cải tiến nằm trong [vòng đời và chi phí](lifecycle.md).
+
 ## Endpoint discovery và reconnect
 
 Client tính một tên sandbox từ danh sách domain, public key client/host và nội dung entrypoint server. Tên đó là chỉ dẫn tra cứu trong App `tunnel`, không phải địa chỉ TCP. Khi cần kết nối, dùng `Sandbox.from_name`; nếu không còn sandbox sống thì tạo sandbox có cùng tên, chờ ready và gọi `tunnels()[2222].tcp_socket`.

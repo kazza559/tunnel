@@ -70,8 +70,15 @@ Host key SSH được tạo và ghim riêng, giữ nguyên qua những lần đ�
 
 Ctrl+C dừng frontend và child SSH. Sandbox có idle timeout 300 giây và lifetime tối đa 24 giờ; một phiên SSH mở giữ sandbox active và có chi phí. Dùng `python tunnel.py stop` sau khi frontend dừng nếu muốn dọn cloud ngay.
 
+## Bật local mới dùng cloud
+
+`python tunnel.py connect` chủ động tìm/tạo sandbox và giữ SSH mở; chưa phải lazy start theo từng request. Khi local còn chạy, sandbox thường vẫn active dù không gửi câu hỏi. Dừng local rồi `python tunnel.py stop` để dọn cloud ngay, hoặc để sandbox hết idle khoảng 5 phút nếu không còn kết nối/hoạt động.
+
+Xem [vòng đời, chi phí và hướng cải tiến](docs/lifecycle.md) để hiểu reuse, keepalive, hết hạn 24 giờ, crash cleanup và những tính năng tối ưu chưa triển khai.
+
 ## Tài liệu
 
+- [Vòng đời, chi phí và hướng cải tiến](docs/lifecycle.md)
 - [Domain filter, nguồn đối chiếu và cách áp dụng](docs/routing.md)
 - [Kiến trúc, DNS và ranh giới tin cậy](docs/architecture.md)
 - [Vận hành, endpoint, key, dừng và xử lý lỗi](docs/operations.md)
