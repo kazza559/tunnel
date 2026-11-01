@@ -1,0 +1,13 @@
+# Apex domains include their subdomains. Other destinations go DIRECT.
+openai.com
+chatgpt.com
+oaistatic.com
+oaiusercontent.com
+oaistatsig.com
+anthropic.com
+claude.ai
+claude.com
+claudeusercontent.com
+claudemcpcontent.com
+# Public IP diagnostic; remove if not needed.
+api.ipify.org

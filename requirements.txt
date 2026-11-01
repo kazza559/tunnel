@@ -1,0 +1,2 @@
+modal>=1.5.1,<2
+websockets>=15,<17
