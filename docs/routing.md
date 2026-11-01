@@ -42,6 +42,17 @@ Dừng frontend hiện tại, sửa file rồi chạy `python tunnel.py connect`
 
 Nếu domain đã chọn mà SSH lỗi, client trả lỗi, không chuyển DIRECT. Local chọn domain ở mọi port nhưng GOST remote chỉ cho 80/443; các port khác bị từ chối. DNS đích của domain được chọn được xử lý ở Modal khi ứng dụng gửi hostname qua HTTP CONNECT hoặc SOCKS hostname mode.
 
+## Hai lựa chọn ở frontend và kiểm tra remote riêng
+
+Với request bình thường từ ứng dụng, chỉ có hai lựa chọn:
+
+| Đích | Đường đi |
+|---|---|
+| Match `domains.txt` | SSH tới Modal |
+| Không match, ví dụ `github.com` | DIRECT từ A, không chạm GOST remote |
+
+Allowlist của GOST remote là lớp kiểm tra riêng cho những kết nối **đã được gửi trực tiếp tới proxy remote**. Bài test gọi `CONNECT github.com:443` ngay vào GOST trong sandbox nhận 403 có chủ đích; nó bỏ qua frontend để xác nhận giới hạn remote. Kết quả này không có nghĩa GitHub qua proxy local bị chặn: frontend chọn DIRECT cho GitHub và không gửi request đó lên Modal. Thành công của đường DIRECT còn phụ thuộc mạng local.
+
 ## Shared domain và giới hạn path
 
 Các repo tham chiếu có GitHub URL như `github.com/openai/...` hoặc thư viện/installer trên npm, Google Storage. File mặc định **không** đưa các host dùng chung đó qua Modal, vì rule hostname sẽ áp dụng cho toàn host, không riêng package/repo của OpenAI/Anthropic.
